@@ -107,3 +107,9 @@ venv.bak/
 logs-*/
 training_data/
 
+# Datasets
+datasets/es_ES
+datasets/es_ES.tgz
+
+# VS Code
+.vscode
