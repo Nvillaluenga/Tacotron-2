@@ -1,15 +1,15 @@
 import os
+import numpy as np
+
+from datasets import audio
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
-
-import numpy as np
-from datasets import audio
 from wavenet_vocoder.util import is_mulaw, is_mulaw_quantize, mulaw, mulaw_quantize
 
 
 def build_from_path(hparams, input_dirs, mel_dir, linear_dir, wav_dir, n_jobs=12, tqdm=lambda x: x):
 	"""
-	Preprocesses the speech dataset from a gven input path to given output directories
+	Preprocesses the speech dataset from a given input path to given output directories
 
 	Args:
 		- hparams: hyper parameters
@@ -28,7 +28,6 @@ def build_from_path(hparams, input_dirs, mel_dir, linear_dir, wav_dir, n_jobs=12
 	# optimization purposes and it can be omited
 	executor = ProcessPoolExecutor(max_workers=n_jobs)
 	futures = []
-	index = 1
 	for input_dir in input_dirs:
 		with open(os.path.join(input_dir, 'metadata.csv'), encoding='utf-8') as f:
 			for line in f:
@@ -37,12 +36,11 @@ def build_from_path(hparams, input_dirs, mel_dir, linear_dir, wav_dir, n_jobs=12
 				wav_path = os.path.join(input_dir, 'wavs', '{}.wav'.format(basename))
 				text = parts[2]
 				futures.append(executor.submit(partial(_process_utterance, mel_dir, linear_dir, wav_dir, basename, wav_path, text, hparams)))
-				index += 1
 
 	return [future.result() for future in tqdm(futures) if future.result() is not None]
 
 
-def _process_utterance(mel_dir, linear_dir, wav_dir, index, wav_path, text, hparams):
+def _process_utterance(mel_dir, linear_dir, wav_dir, basename, wav_path, text, hparams):
 	"""
 	Preprocesses a single utterance wav/text pair
 
@@ -53,7 +51,7 @@ def _process_utterance(mel_dir, linear_dir, wav_dir, index, wav_path, text, hpar
 		- mel_dir: the directory to write the mel spectograms into
 		- linear_dir: the directory to write the linear spectrograms into
 		- wav_dir: the directory to write the preprocessed wav into
-		- index: the numeric index to use in the spectogram filename
+		- basename: the basename to use in the spectogram filename
 		- wav_path: path to the audio file containing the speech input
 		- text: text spoken in the input audio file
 		- hparams: hyper parameters
@@ -63,23 +61,23 @@ def _process_utterance(mel_dir, linear_dir, wav_dir, index, wav_path, text, hpar
 	"""
 	try:
 		# Load the audio as numpy array
-		wav = audio.load_wav(wav_path, sr=hparams.sample_rate)
+		wav = audio.load_wav(wav_path, sr=hparams["sample_rate"])
 	except FileNotFoundError: #catch missing wav exception
 		print('file {} present in csv metadata is not present in wav folder. skipping!'.format(
 			wav_path))
 		return None
 
 	#Trim lead/trail silences
-	if hparams.trim_silence:
+	if hparams["trim_silence"]:
 		wav = audio.trim_silence(wav, hparams)
 
 	#Pre-emphasize
-	preem_wav = audio.preemphasis(wav, hparams.preemphasis, hparams.preemphasize)
+	preem_wav = audio.preemphasis(wav, hparams["preemphasis"], hparams["preemphasize"])
 
 	#rescale wav
-	if hparams.rescale:
-		wav = wav / np.abs(wav).max() * hparams.rescaling_max
-		preem_wav = preem_wav / np.abs(preem_wav).max() * hparams.rescaling_max
+	if hparams["rescale"]:
+		wav = wav / np.abs(wav).max() * hparams["rescaling_max"]
+		preem_wav = preem_wav / np.abs(preem_wav).max() * hparams["rescaling_max"]
 
 		#Assert all audio is in [-1, 1]
 		if (wav > 1.).any() or (wav < -1.).any():
@@ -88,23 +86,23 @@ def _process_utterance(mel_dir, linear_dir, wav_dir, index, wav_path, text, hpar
 			raise RuntimeError('wav has invalid value: {}'.format(wav_path))
 
 	#Mu-law quantize
-	if is_mulaw_quantize(hparams.input_type):
+	if is_mulaw_quantize(hparams["input_type"]):
 		#[0, quantize_channels)
-		out = mulaw_quantize(wav, hparams.quantize_channels)
+		out = mulaw_quantize(wav, hparams["quantize_channels"])
 
 		#Trim silences
-		start, end = audio.start_and_end_indices(out, hparams.silence_threshold)
+		start, end = audio.start_and_end_indices(out, hparams["silence_threshold"])
 		wav = wav[start: end]
 		preem_wav = preem_wav[start: end]
 		out = out[start: end]
 
-		constant_values = mulaw_quantize(0, hparams.quantize_channels)
+		constant_values = mulaw_quantize(0, hparams["quantize_channels"])
 		out_dtype = np.int16
 
-	elif is_mulaw(hparams.input_type):
+	elif is_mulaw(hparams["input_type"]):
 		#[-1, 1]
-		out = mulaw(wav, hparams.quantize_channels)
-		constant_values = mulaw(0., hparams.quantize_channels)
+		out = mulaw(wav, hparams["quantize_channels"])
+		constant_values = mulaw(0., hparams["quantize_channels"])
 		out_dtype = np.float32
 
 	else:
@@ -117,7 +115,7 @@ def _process_utterance(mel_dir, linear_dir, wav_dir, index, wav_path, text, hpar
 	mel_spectrogram = audio.melspectrogram(preem_wav, hparams).astype(np.float32)
 	mel_frames = mel_spectrogram.shape[1]
 
-	if mel_frames > hparams.max_mel_frames and hparams.clip_mels_length:
+	if mel_frames > hparams["max_mel_frames"] and hparams["clip_mels_length"]:
 		return None
 
 	#Compute the linear scale spectrogram from the wav
@@ -127,16 +125,16 @@ def _process_utterance(mel_dir, linear_dir, wav_dir, index, wav_path, text, hpar
 	#sanity check
 	assert linear_frames == mel_frames
 
-	if hparams.use_lws:
+	if hparams["use_lws"]:
 		#Ensure time resolution adjustement between audio and mel-spectrogram
-		fft_size = hparams.n_fft if hparams.win_size is None else hparams.win_size
+		fft_size = hparams["n_fft"] if hparams["win_size"] is None else hparams["win_size"]
 		l, r = audio.pad_lr(wav, fft_size, audio.get_hop_size(hparams))
 
 		#Zero pad audio signal
 		out = np.pad(out, (l, r), mode='constant', constant_values=constant_values)
 	else:
 		#Ensure time resolution adjustement between audio and mel-spectrogram
-		l_pad, r_pad = audio.librosa_pad_lr(wav, hparams.n_fft, audio.get_hop_size(hparams), hparams.wavenet_pad_sides)
+		l_pad, r_pad = audio.librosa_pad_lr(wav, hparams["n_fft"], audio.get_hop_size(hparams), hparams["wavenet_pad_sides"])
 
 		#Reflect pad audio signal on the right (Just like it's done in Librosa to avoid frame inconsistency)
 		out = np.pad(out, (l_pad, r_pad), mode='constant', constant_values=constant_values)
@@ -151,9 +149,9 @@ def _process_utterance(mel_dir, linear_dir, wav_dir, index, wav_path, text, hpar
 	time_steps = len(out)
 
 	# Write the spectrogram and audio to disk
-	audio_filename = 'audio-{}.npy'.format(index)
-	mel_filename = 'mel-{}.npy'.format(index)
-	linear_filename = 'linear-{}.npy'.format(index)
+	audio_filename = 'audio-{}.npy'.format(basename)
+	mel_filename = 'mel-{}.npy'.format(basename)
+	linear_filename = 'linear-{}.npy'.format(basename)
 	np.save(os.path.join(wav_dir, audio_filename), out.astype(out_dtype), allow_pickle=False)
 	np.save(os.path.join(mel_dir, mel_filename), mel_spectrogram.T, allow_pickle=False)
 	np.save(os.path.join(linear_dir, linear_filename), linear_spectrogram.T, allow_pickle=False)
