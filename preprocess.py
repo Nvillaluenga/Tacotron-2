@@ -23,7 +23,7 @@ def write_metadata(metadata, out_dir):
 			f.write('|'.join([str(x) for x in m]) + '\n')
 	mel_frames = sum([int(m[4]) for m in metadata])
 	timesteps = sum([int(m[3]) for m in metadata])
-	sr = hparams.sample_rate
+	sr = hparams["sample_rate"]
 	hours = timesteps / sr / 3600
 	print('Write {} utterances, {} mel frames, {} audio timesteps, ({:.2f} hours)'.format(
 		len(metadata), mel_frames, timesteps, hours))
@@ -82,11 +82,17 @@ def run_preprocess(args, hparams):
 
 	preprocess(args, input_folders, output_folder, hparams)
 
+def parse_params(hparams, args_params):
+	if not args_params: return hparams
+	for key, value in args_params.items():
+		hparams[key] = value
+	return hparams
+
 
 def main():
 	print('initializing preprocessing..')
 	parser = argparse.ArgumentParser()
-	parser.add_argument('--base_dir', default='')
+	parser.add_argument('--base_dir', default='datasets')
 	parser.add_argument('--hparams', default='',
 		help='Hyperparameter overrides as a comma-separated list of name=value pairs')
 	parser.add_argument('--dataset', default='LJSpeech-1.1')
@@ -98,8 +104,8 @@ def main():
 	parser.add_argument('--output', default='training_data')
 	parser.add_argument('--n_jobs', type=int, default=cpu_count())
 	args = parser.parse_args()
-
-	modified_hp = hparams.parse(args.hparams)
+	print(args)
+	modified_hp = parse_params(hparams, args.hparams)
 
 	assert args.merge_books in ('False', 'True')
 
